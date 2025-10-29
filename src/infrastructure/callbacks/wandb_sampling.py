@@ -120,7 +120,18 @@ class WandbVideoSamplingCallback(Callback):
             return
 
         device = pl_module.device
-        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        # Choose dtype consistent with Trainer precision to avoid cast churn and memory spikes
+        prec = getattr(getattr(trainer, "precision", None), "value", None) or getattr(trainer, "precision", None)
+        if isinstance(prec, str):
+            low = prec.lower()
+            if "bf16" in low:
+                dtype = torch.bfloat16
+            elif "16" in low:
+                dtype = torch.float16
+            else:
+                dtype = torch.float32
+        else:
+            dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
         # Decide if model supports video sampling: if UNet expects 5D and sampler/vae support, sample video
         # We'll always construct video latents [B,C,F,H,W] if num_frames > 1
@@ -138,25 +149,34 @@ class WandbVideoSamplingCallback(Callback):
 
         # Call sample on module; it returns images
         if hasattr(pl_module, "sample"):
-            if encoder_inputs is not None:
-                images = pl_module.sample(
-                    num_inference_steps=self.num_inference_steps,
-                    latents_shape=(b, c, self.num_frames, h, w) if self.num_frames > 1 else (b, c, h, w),
-                    encoder_inputs=encoder_inputs,  # type: ignore[arg-type]
-                    device=device,
-                    dtype=dtype,
-                )
-            else:
-                images = pl_module.sample(
-                    num_inference_steps=self.num_inference_steps,
-                    latents_shape=(b, c, self.num_frames, h, w) if self.num_frames > 1 else (b, c, h, w),
-                    encoder_hidden_states=encoder_hidden_states,
-                    device=device,
-                    dtype=dtype,
-                )
+            # Temporarily set eval to minimize training-mode buffers during sampling
+            was_training = bool(pl_module.training)
+            try:
+                pl_module.eval()
+                if encoder_inputs is not None:
+                    images = pl_module.sample(
+                        num_inference_steps=self.num_inference_steps,
+                        latents_shape=(b, c, self.num_frames, h, w) if self.num_frames > 1 else (b, c, h, w),
+                        encoder_inputs=encoder_inputs,  # type: ignore[arg-type]
+                        device=device,
+                        dtype=dtype,
+                    )
+                else:
+                    images = pl_module.sample(
+                        num_inference_steps=self.num_inference_steps,
+                        latents_shape=(b, c, self.num_frames, h, w) if self.num_frames > 1 else (b, c, h, w),
+                        encoder_hidden_states=encoder_hidden_states,
+                        device=device,
+                        dtype=dtype,
+                    )
+            finally:
+                if was_training:
+                    pl_module.train()
         else:
             return
 
+        # Move images to CPU immediately to free GPU memory before video encoding
+        images = images.detach().to("cpu")
         # Images: [B,3,H,W] or [B,3,T,H,W]
         videos = []
         if images.ndim == 4:
