@@ -216,16 +216,31 @@ def build_components(cfg: SystemConfig):
             optimizer_spec=cfg.unet.optimizer.to_spec(),
         )
     else:
+        # If encoder is disabled, prefer non-cross-attention 3D blocks and no cross-attention dim
+        if not cfg.encoder_enabled:
+            cross_dim = None
+            # Coerce any CrossAttn* blocks to plain 3D blocks
+            down_types = tuple(
+                ("DownBlock3D" if isinstance(t, str) and "CrossAttn" in t else t) for t in cfg.unet.down_block_types
+            )
+            up_types = tuple(
+                ("UpBlock3D" if isinstance(t, str) and "CrossAttn" in t else t) for t in cfg.unet.up_block_types
+            )
+        else:
+            cross_dim = cfg.unet.cross_attention_dim or 1024
+            down_types = cfg.unet.down_block_types
+            up_types = cfg.unet.up_block_types
+
         unet = create_diffusers_unet3d_condition(
             sample_size=cfg.unet.sample_size,
             in_channels=cfg.unet.in_channels,
             out_channels=cfg.unet.out_channels,
             block_out_channels=cfg.unet.block_out_channels,
-            down_block_types=cfg.unet.down_block_types,
-            up_block_types=cfg.unet.up_block_types,
+            down_block_types=down_types,
+            up_block_types=up_types,
             layers_per_block=cfg.unet.layers_per_block,
             norm_num_groups=cfg.unet.norm_num_groups,
-            cross_attention_dim=cfg.unet.cross_attention_dim or 1024,
+            cross_attention_dim=cross_dim,
             attention_head_dim=cfg.unet.attention_head_dim or 64,
             dtype=_parse_dtype(cfg.unet.model_dtype),
             optimizer_spec=cfg.unet.optimizer.to_spec(),
