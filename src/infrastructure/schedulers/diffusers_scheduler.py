@@ -68,7 +68,12 @@ class DiffusersSchedulerAdapter:
     def scale_model_input(self, sample: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
         fn = getattr(self.scheduler, "scale_model_input", None)
         if callable(fn):
-            return fn(sample=sample, timestep=timestep)
+            # Some schedulers (e.g., EulerDiscreteScheduler) expect a scalar timestep matching
+            # their internal schedule, not a batch-sized vector. Coerce batched timesteps to scalar.
+            ts = timestep
+            if isinstance(ts, torch.Tensor) and ts.ndim > 0:
+                ts = ts[0]
+            return fn(sample=sample, timestep=ts)
         return sample
 
     def step(
