@@ -66,7 +66,16 @@ def create_diffusers_vae(
     if sample_size is not None:
         kwargs["sample_size"] = sample_size
 
-    model = AutoencoderKL(**kwargs)
+    # Some diffusers versions require `norm_num_groups`; others reject it.
+    # Prefer passing a safe default (32) and fall back to no-arg if unsupported.
+    try:
+        desired_norm = 32 if norm_num_groups is None else norm_num_groups
+        model = AutoencoderKL(**({**kwargs, "norm_num_groups": desired_norm}))
+    except TypeError as e:
+        if "norm_num_groups" in str(e):
+            model = AutoencoderKL(**kwargs)
+        else:
+            raise
     if scaling_factor is not None:
         # Update config to reflect scaling factor convention used with UNet
         if hasattr(model, "config"):
