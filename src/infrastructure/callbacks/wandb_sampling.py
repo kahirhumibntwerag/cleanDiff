@@ -84,7 +84,8 @@ def _frames_from_video_afmhot(
         if hi > lo:
             arr = (arr - lo) / (hi - lo)
         else:
-            arr = torch.zeros_like(arr)
+            # Uniform frame; render mid-gray to avoid fully black output
+            arr = torch.full_like(arr, 0.5)
         arr_np = arr.cpu().numpy()
         rgba = cm.get_cmap("afmhot")(arr_np)
         rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
@@ -120,18 +121,24 @@ class WandbVideoSamplingCallback(Callback):
             return
 
         device = pl_module.device
-        # Choose dtype consistent with Trainer precision to avoid cast churn and memory spikes
+        # Choose dtype consistent with Trainer precision, but avoid float16 on CPU
         prec = getattr(getattr(trainer, "precision", None), "value", None) or getattr(trainer, "precision", None)
+        dev_type = pl_module.device.type if hasattr(pl_module, "device") else ("cuda" if torch.cuda.is_available() else "cpu")
         if isinstance(prec, str):
             low = prec.lower()
             if "bf16" in low:
                 dtype = torch.bfloat16
             elif "16" in low:
-                dtype = torch.float16
+                # Prefer bf16 on CPU; fp16 on CUDA
+                dtype = torch.float16 if dev_type == "cuda" else torch.bfloat16
             else:
                 dtype = torch.float32
         else:
-            dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            # Default: mixed precision only on CUDA; otherwise use float32 on CPU
+            if torch.cuda.is_available() and dev_type == "cuda":
+                dtype = torch.float16
+            else:
+                dtype = torch.float32
 
         # Decide if model supports video sampling: if UNet expects 5D and sampler/vae support, sample video
         # We'll always construct video latents [B,C,F,H,W] if num_frames > 1
