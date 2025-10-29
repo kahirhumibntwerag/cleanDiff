@@ -96,7 +96,37 @@ class DiffusersSchedulerAdapter:
     ) -> torch.Tensor:
         fn = getattr(self.scheduler, "add_noise", None)
         if callable(fn):
-            return fn(original_samples=original_samples, noise=noise, timesteps=timesteps)
+            try:
+                return fn(original_samples=original_samples, noise=noise, timesteps=timesteps)
+            except Exception:
+                # Some schedulers (e.g., EulerDiscreteScheduler) expect timesteps from the internal schedule.
+                # Map integer indices -> scheduled timesteps and retry.
+                schedule = getattr(self.scheduler, "timesteps", None)
+                if schedule is None or int(getattr(schedule, "numel", lambda: 0)()) == 0:
+                    # Initialize schedule with the full training horizon
+                    device = original_samples.device
+                    try:
+                        self.set_timesteps(num_inference_steps=self.num_train_timesteps, device=device)
+                        schedule = getattr(self.scheduler, "timesteps", None)
+                    except Exception:
+                        schedule = None
+                if schedule is not None and int(getattr(schedule, "numel", lambda: 0)()) > 0:
+                    if isinstance(timesteps, torch.Tensor):
+                        # Convert to indices if dtype is integral; otherwise, assume already on schedule
+                        if timesteps.dtype in (torch.int8, torch.int16, torch.int32, torch.int64, torch.long, torch.short):
+                            idx = timesteps.clamp(0, schedule.shape[0] - 1).to(device=schedule.device, dtype=torch.long)
+                            ts = schedule[idx]
+                        else:
+                            ts = timesteps.to(device=schedule.device, dtype=schedule.dtype)
+                        if ts.ndim == 0:
+                            ts = ts.unsqueeze(0)
+                    else:
+                        if isinstance(timesteps, int):
+                            idx = max(0, min(int(timesteps), schedule.shape[0] - 1))
+                            ts = schedule[idx].unsqueeze(0)
+                        else:
+                            ts = timesteps
+                    return fn(original_samples=original_samples, noise=noise, timesteps=ts)
         # Fallback (not strictly correct for all schedulers)
         return original_samples + noise
 
