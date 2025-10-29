@@ -47,26 +47,71 @@ def create_diffusers_video_unet(
         kwargs["attention_head_dim"] = attention_head_dim
     # Ensure num_attention_heads length matches down_block_types for older diffusers versions
     if num_attention_heads is not None:
-        kwargs["num_attention_heads"] = tuple(num_attention_heads) if isinstance(num_attention_heads, (list, tuple)) else num_attention_heads
-    elif cross_attention_dim is not None:
-        # Derive a reasonable default: 64-d head size => heads = cross_dim // 64
-        # Repeat per down block to satisfy diffusers validation.
-        derived_heads = max(1, int(cross_attention_dim // 64))
-        kwargs["num_attention_heads"] = tuple([derived_heads] * len(down_block_types))
+        heads_tuple = tuple(num_attention_heads) if isinstance(num_attention_heads, (list, tuple)) else num_attention_heads
+        kwargs["num_attention_heads"] = heads_tuple
+    else:
+        # Derive per-block heads based on block_out_channels to ensure divisibility
+        per_block_heads = []
+        for out_ch in block_out_channels:
+            # Aim for ~64 dims per head, fallback to a divisor of out_ch
+            target = max(1, int(out_ch // 64))
+            h = max(1, target)
+            while out_ch % h != 0 and h > 1:
+                h -= 1
+            per_block_heads.append(h)
+        kwargs["num_attention_heads"] = tuple(per_block_heads)
+
+    # Ensure attention_head_dim matches per-block so that inner_dim = out_ch
+    if attention_head_dim is None:
+        per_block_head_dim = []
+        heads = kwargs["num_attention_heads"]
+        heads_list = list(heads) if isinstance(heads, (list, tuple)) else [int(heads)] * len(block_out_channels)
+        for out_ch, h in zip(block_out_channels, heads_list):
+            per_block_head_dim.append(int(out_ch // max(1, int(h))))
+        kwargs["attention_head_dim"] = tuple(per_block_head_dim)
 
     # Some diffusers versions require `norm_num_groups`; others reject it.
-    # Prefer passing a safe default (32) and fall back to no-arg if unsupported.
+    # Some older versions also reject `attention_head_dim`.
+    desired_norm = 32 if norm_num_groups is None else norm_num_groups
     try:
-        desired_norm = 32 if norm_num_groups is None else norm_num_groups
         model = UNetSpatioTemporalConditionModel(**({**kwargs, "norm_num_groups": desired_norm}))
     except TypeError as e:
-        # Older versions: `norm_num_groups` not accepted; retry without it
-        if "norm_num_groups" in str(e):
+        msg = str(e)
+        if "attention_head_dim" in msg:
+            # Retry without attention_head_dim and adjust block_out_channels to multiples of 88 * heads
+            k2 = dict(kwargs)
+            k2.pop("attention_head_dim", None)
+            heads = k2.get("num_attention_heads", ())
+            heads_list = list(heads) if isinstance(heads, (list, tuple)) else [int(heads)] * len(block_out_channels)
+            new_blocks = []
+            for out_ch, h in zip(block_out_channels, heads_list):
+                h_i = max(1, int(h))
+                # Ensure heads is a multiple of 4 so that (heads*88) is divisible by 32 for GroupNorm
+                if h_i % 4 != 0:
+                    h_i = ((h_i // 4) + 1) * 4
+                new_blocks.append(h_i * 88)
+            k2["block_out_channels"] = tuple(new_blocks)
+            try:
+                model = UNetSpatioTemporalConditionModel(**({**k2, "norm_num_groups": desired_norm}))
+            except TypeError as e3:
+                if "norm_num_groups" in str(e3):
+                    try:
+                        model = UNetSpatioTemporalConditionModel(**k2)
+                    except TypeError as e4:
+                        if "num_groups" in str(e4) or "GroupNorm" in str(e4) or "%: 'int' and 'NoneType'" in str(e4):
+                            st_kwargs = dict(k2)
+                            st_kwargs["down_block_types"] = ("DownBlockSpatioTemporal",) * len(tuple(down_block_types))
+                            st_kwargs["up_block_types"] = ("UpBlockSpatioTemporal",) * len(tuple(up_block_types))
+                            model = UNetSpatioTemporalConditionModel(**st_kwargs)
+                        else:
+                            raise
+                else:
+                    raise
+        elif "norm_num_groups" in msg:
             try:
                 model = UNetSpatioTemporalConditionModel(**kwargs)
             except TypeError as e2:
                 # Some older variants pass `resnet_groups=None` via get_down_block causing GroupNorm errors.
-                # Fallback to spatio-temporal blocks which don't rely on `resnet_groups` kw.
                 if "num_groups" in str(e2) or "GroupNorm" in str(e2) or "%: 'int' and 'NoneType'" in str(e2):
                     st_kwargs = dict(kwargs)
                     st_kwargs["down_block_types"] = ("DownBlockSpatioTemporal",) * len(tuple(down_block_types))

@@ -99,8 +99,8 @@ def test_create_unet_build_derives_heads_and_omits_norm(monkeypatch: pytest.Monk
     down_blocks: Sequence[str] = kwargs["down_block_types"]
     assert isinstance(heads, (list, tuple)) and len(heads) == len(down_blocks)
 
-    # With cross_attention_dim=768, default derived heads should be 12
-    assert all(h == 12 for h in heads)
+    # Expect per-block heads derived from block_out_channels (~64 dims/head)
+    assert tuple(heads) == (2, 4, 4)
 
 
 def test_forward_shapes_for_4d_and_5d(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,5 +166,35 @@ def test_real_unet_forward_cpu_4d_and_5d():
     lat_5d = torch.randn(b, c, f, h, w)
     out_5d = backbone(lat_5d, t, encoder_hidden_states=ehs)
     assert out_5d.shape == lat_5d.shape
+
+
+def test_real_unet_head_dim_matches_block_channels():
+    pytest.importorskip("diffusers")
+    from src.infrastructure.unet.factory import create_diffusers_video_unet
+
+    # Use channels where bad defaults would previously misalign (e.g., 256)
+    backbone = create_diffusers_video_unet(sample_size=16, cross_attention_dim=64, block_out_channels=(128, 256, 256))
+
+    cfg = backbone.model.config  # type: ignore[attr-defined]
+    # num_attention_heads and attention_head_dim can be int or tuple; coerce to tuple of length blocks
+    num_blocks = len(cfg.block_out_channels)
+    heads = cfg.num_attention_heads
+    # Config may be a FrozenDict; support both attribute and mapping access
+    head_dims = getattr(cfg, "attention_head_dim", None)
+    if head_dims is None and hasattr(cfg, "__getitem__"):
+        try:
+            head_dims = cfg["attention_head_dim"]
+        except Exception:
+            head_dims = None
+    if head_dims is None:
+        pytest.skip("attention_head_dim not exposed in this diffusers version")
+    if isinstance(heads, int):
+        heads = (heads,) * num_blocks
+    if isinstance(head_dims, int):
+        head_dims = (head_dims,) * num_blocks
+
+    for out_ch, h, d in zip(cfg.block_out_channels, heads, head_dims):
+        assert out_ch % d == 0
+        assert (out_ch // d) == h
 
 
