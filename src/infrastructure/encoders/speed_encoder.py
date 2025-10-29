@@ -82,7 +82,17 @@ class SpeedEncoder(nn.Module):
         norm = (speeds / self.speed_scale).clamp_min(0.0)
         ff = _fourier_features(norm, self.num_fourier_frequencies, self.max_fourier_frequency)
         feats = torch.cat([norm, ff], dim=-1)
+        # Ensure matmul dtype matches module weights to avoid Half/Float mismatch under mixed precision
+        orig_dtype = feats.dtype
+        try:
+            param_dtype = next(self.mlp.parameters()).dtype
+        except StopIteration:
+            param_dtype = orig_dtype
+        feats = feats.to(dtype=param_dtype)
         hs = self.mlp(feats)  # [B, D]
+        # Return to original requested dtype for downstream modules
+        if hs.dtype != orig_dtype:
+            hs = hs.to(dtype=orig_dtype)
         hs = hs[:, None, :]   # [B, 1, D]
 
         if return_dict:

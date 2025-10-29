@@ -1,7 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Literal, Optional, Sequence
+from dataclasses import dataclass, field, is_dataclass
+from typing import Any, Dict, Literal, Optional, Sequence, get_args, get_origin
+import json
+import os
+import types as _types
+import inspect as _inspect
+import typing as _typing
+try:
+    import tomllib as _tomllib  # Python 3.11+
+except Exception:  # pragma: no cover - best effort for older Pythons
+    _tomllib = None  # type: ignore[assignment]
 
 import torch
 
@@ -268,4 +277,165 @@ def build_components(cfg: SystemConfig):
 def default_config() -> SystemConfig:
     return SystemConfig()
 
+
+
+# -------- Override utilities --------
+
+def _is_enum_type(tp: Any) -> bool:
+    try:
+        import enum
+        return _inspect.isclass(tp) and issubclass(tp, enum.Enum)
+    except Exception:
+        return False
+
+
+def _unwrap_optional(tp: Any) -> Any:
+    origin = get_origin(tp)
+    if origin is _typing.Union:  # Optional[X] is Union[X, NoneType]
+        args = [a for a in get_args(tp) if a is not type(None)]  # noqa: E721
+        if len(args) == 1:
+            return args[0]
+    return tp
+
+
+def _coerce_scalar(expected_type: Any, raw: str) -> Any:
+    et = _unwrap_optional(expected_type)
+    origin = get_origin(et)
+
+    # Literal values: coerce to the type of the first literal
+    if origin is _typing.Literal:
+        lit_args = get_args(et)
+        if not lit_args:
+            return raw
+        base_type = type(lit_args[0])
+        return base_type(raw)
+
+    if _is_enum_type(et):
+        # Enum by name (case-insensitive)
+        name = str(raw)
+        for member in et:  # type: ignore[operator]
+            if member.name.lower() == name.lower():
+                return member
+        # fallback try direct access
+        try:
+            return et[name]
+        except Exception:
+            raise ValueError(f"Invalid enum value '{raw}' for {et}")
+
+    if et in (int, float, str):
+        return et(raw)
+    if et is bool:
+        low = str(raw).strip().lower()
+        if low in ("1", "true", "t", "yes", "y"):  # truthy
+            return True
+        if low in ("0", "false", "f", "no", "n", ""):  # falsy
+            return False
+        raise ValueError(f"Cannot parse boolean from '{raw}'")
+
+    # torch.dtype is expressed via Literal in our config; if seen directly leave as string
+    return raw
+
+
+def _coerce_sequence(expected_type: Any, raw: str) -> Sequence[Any]:
+    # Comma-separated list -> try to coerce element type
+    elem_type: Any = str
+    args = get_args(expected_type)
+    if args:
+        elem_type = _unwrap_optional(args[0])
+    parts = [p for p in (s.strip() for s in raw.split(",")) if p != ""]
+    coerced = [_coerce_scalar(elem_type, p) for p in parts]
+    # Prefer tuple for our configs which commonly use tuples
+    return tuple(coerced)
+
+
+def _coerce_mapping(raw: str) -> Dict[str, Any]:
+    # Expect JSON for mappings on CLI/env
+    return json.loads(raw)
+
+
+def _coerce_value(expected_type: Any, raw: Any) -> Any:
+    # Pass-through if not a string (assume already typed)
+    if not isinstance(raw, str):
+        return raw
+
+    # Null-like values for Optionals
+    if raw.strip().lower() in ("none", "null"):  # set None
+        return None
+
+    et = _unwrap_optional(expected_type)
+    origin = get_origin(et)
+
+    if origin in (list, tuple, Sequence):
+        return _coerce_sequence(et, raw)
+    if origin in (dict, Dict):
+        return _coerce_mapping(raw)
+
+    return _coerce_scalar(et, raw)
+
+
+def _get_attr_and_field_type(root: Any, path: Sequence[str]) -> tuple[Any, str, Any]:
+    obj = root
+    for key in path[:-1]:
+        obj = getattr(obj, key)
+    leaf = path[-1]
+    # Try dataclass field annotation to determine type
+    field_type = None
+    try:
+        # Inspect the dataclass of parent
+        parent_type = type(obj)
+        hints = _typing.get_type_hints(parent_type)
+        field_type = hints.get(leaf)
+    except Exception:
+        field_type = None
+    return obj, leaf, field_type
+
+
+def apply_dot_overrides(cfg: SystemConfig, overrides: Dict[str, Any]) -> None:
+    for dotted_key, value in overrides.items():
+        path = [seg for seg in dotted_key.replace("-", "_").split(".") if seg]
+        if not path:
+            continue
+        parent, leaf, field_type = _get_attr_and_field_type(cfg, path)
+        coerced = _coerce_value(field_type, value)
+        setattr(parent, leaf, coerced)
+
+
+def apply_mapping_overrides(cfg: SystemConfig, mapping: Dict[str, Any], *, _path: Sequence[str] | None = None) -> None:
+    # Recursively set attributes from a nested mapping
+    base_path = list(_path or [])
+    for key, value in mapping.items():
+        key_norm = str(key).replace("-", "_")
+        if isinstance(value, dict):
+            apply_mapping_overrides(cfg, value, _path=base_path + [key_norm])
+        else:
+            dotted = ".".join(base_path + [key_norm])
+            apply_dot_overrides(cfg, {dotted: value})
+
+
+def env_overrides(prefix: str = "LIGHTNING_") -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for k, v in os.environ.items():
+        if not k.startswith(prefix):
+            continue
+        # Support both LIGHTNING_training__batch_size and LIGHTNING_training.batch_size
+        rest = k[len(prefix) :]
+        if "__" in rest:
+            path = rest.split("__")
+        else:
+            path = rest.split(".")
+        dotted = ".".join(seg.strip().lower() for seg in path if seg)
+        out[dotted] = v
+    return out
+
+
+def load_config_file(path: str) -> Dict[str, Any]:
+    if path.endswith(".json"):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    if path.endswith(".toml") or path.endswith(".tml"):
+        if _tomllib is None:
+            raise RuntimeError("TOML support requires Python 3.11+ (tomllib)")
+        with open(path, "rb") as f:
+            return _tomllib.load(f)
+    raise ValueError("Unsupported config file type. Use .json or .toml")
 

@@ -10,7 +10,15 @@ import lightning.pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
-from src.application.config import SystemConfig, build_components, default_config
+from src.application.config import (
+    SystemConfig,
+    build_components,
+    default_config,
+    apply_mapping_overrides,
+    apply_dot_overrides,
+    env_overrides,
+    load_config_file,
+)
 from src.application.usecases.without_encoder_module import TrainWithoutEncoderDiffusionModule
 from src.application.usecases.with_encoder_module import TrainEncoderDiffusionModule
 from src.infrastructure.datamodules import create_clip_video_datamodule
@@ -38,8 +46,8 @@ def _precision_flag(precision: str) -> str | int:
     return 32
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train diffusion UNet using factories and centralized config")
+def parse_args() -> tuple[argparse.Namespace, list[str]]:
+    p = argparse.ArgumentParser(description="Train diffusion UNet using factories and centralized config", add_help=True)
     # Training overrides
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--max-epochs", type=int, default=None)
@@ -69,13 +77,63 @@ def parse_args() -> argparse.Namespace:
     # Checkpointing
     p.add_argument("--ckpt-dir", type=str, default=None, help="Directory to save checkpoints")
     p.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint to resume from")
-    return p.parse_args()
+    # Config system
+    p.add_argument("--config", type=str, default=None, help="Path to config file (.json or .toml)")
+    p.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override any config field via dotted path, e.g. training.batch_size=8. Repeatable.",
+    )
+    return p.parse_known_args()
+
+
+def _collect_unknown_overrides(unknown: list[str]) -> dict[str, str]:
+    # Support formats: --a.b=c and pairs: --a.b c
+    out: dict[str, str] = {}
+    i = 0
+    while i < len(unknown):
+        tok = unknown[i]
+        if tok.startswith("--"):
+            body = tok[2:]
+            if "=" in body:
+                key, val = body.split("=", 1)
+                out[key] = val
+                i += 1
+                continue
+            # pair form
+            if (i + 1) < len(unknown) and not unknown[i + 1].startswith("--"):
+                out[body] = unknown[i + 1]
+                i += 2
+                continue
+        i += 1
+    return out
 
 
 def main() -> None:
-    args = parse_args()
+    args, unknown = parse_args()
 
     cfg = default_config()
+
+    # File-based overrides
+    if getattr(args, "config", None):
+        mapping = load_config_file(args.config)
+        apply_mapping_overrides(cfg, mapping)
+
+    # Env overrides (prefix LIGHTNING_)
+    apply_dot_overrides(cfg, env_overrides(prefix="LIGHTNING_"))
+
+    # Free-form dotlist overrides from --set and unknown tokens
+    dot_overrides: dict[str, str] = {}
+    for kv in getattr(args, "set", []) or []:
+        if "=" not in kv:
+            continue
+        k, v = kv.split("=", 1)
+        dot_overrides[k] = v
+    dot_overrides.update(_collect_unknown_overrides(unknown))
+    if dot_overrides:
+        apply_dot_overrides(cfg, dot_overrides)
 
     # Apply CLI overrides
     if args.max_epochs is not None:

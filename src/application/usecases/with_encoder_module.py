@@ -148,6 +148,10 @@ class TrainEncoderDiffusionModule(LightningModule):
                 encoder_hidden_states = out.get("encoder_hidden_states")
             else:
                 encoder_hidden_states = out
+        # Align encoder hidden states dtype with requested dtype to avoid UNet dtype mismatches
+        if dtype is not None and isinstance(encoder_hidden_states, torch.Tensor):
+            if encoder_hidden_states.dtype != dtype:
+                encoder_hidden_states = encoder_hidden_states.to(dtype=dtype)
         return self.sampler.sample(
             unet=self.unet,
             scheduler=self.scheduler,
