@@ -66,9 +66,17 @@ class TrainEncoderDiffusionModule(LightningModule):
         raise ValueError(f"Unsupported prediction_type: {pred_type}")
 
     def _prepare_latents(self, images: torch.Tensor, sample_from_posterior: bool) -> torch.Tensor:
+        # Accept either images [B, C, H, W] or video [B, C, T, H, W]
         with torch.no_grad():
-            enc = self.vae.encode(images, sample=sample_from_posterior)
-        return enc.latents * self.vae.scaling_factor
+            if images.ndim == 5:
+                b, c, t, h, w = images.shape
+                flat = images.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+                enc = self.vae.encode(flat, sample=sample_from_posterior)
+                lat = enc.latents.reshape(b, t, -1, enc.latents.shape[-2], enc.latents.shape[-1]).permute(0, 2, 1, 3, 4)
+            else:
+                enc = self.vae.encode(images, sample=sample_from_posterior)
+                lat = enc.latents
+        return lat * self.vae.scaling_factor
 
     def training_step(self, batch: DiffusionBatch, batch_idx: int) -> torch.Tensor:
         images: torch.Tensor = batch["pixel_values"]
