@@ -71,6 +71,8 @@ class _FakeModule(torch.nn.Module):
         super().__init__()
         self._dev = device
         self.vae = types.SimpleNamespace(latent_channels=4)
+        # simple parameter to check grads unaffected
+        self.w = torch.nn.Parameter(torch.ones(1))
 
     @property
     def device(self) -> torch.device:  # type: ignore[override]
@@ -150,9 +152,17 @@ def test_wandb_callback_uses_trainer_precision_and_moves_images_to_cpu(monkeypat
     cb = WandbVideoSamplingCallback(sample_every_n_steps=100, num_inference_steps=2, num_frames=1, image_size=16)
     trainer = _FakeTrainer(precision_value="bf16-mixed", global_step=100)
     pl_module = _FakeModule(device=torch.device("cpu"))
+    pl_module.train()
+    assert pl_module.training is True
+    # ensure no pre-existing grad
+    assert pl_module.w.grad is None
 
     # Should sample now and move images to CPU for frame extraction
     cb.on_train_batch_end(trainer, pl_module, None, None, 0)
     assert called["frames_on_cpu"] is True
+    # training state restored
+    assert pl_module.training is True
+    # no grad created by sampling
+    assert pl_module.w.grad is None
 
 

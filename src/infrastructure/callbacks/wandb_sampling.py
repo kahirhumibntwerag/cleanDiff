@@ -153,22 +153,24 @@ class WandbVideoSamplingCallback(Callback):
             was_training = bool(pl_module.training)
             try:
                 pl_module.eval()
-                if encoder_inputs is not None:
-                    images = pl_module.sample(
-                        num_inference_steps=self.num_inference_steps,
-                        latents_shape=(b, c, self.num_frames, h, w) if self.num_frames > 1 else (b, c, h, w),
-                        encoder_inputs=encoder_inputs,  # type: ignore[arg-type]
-                        device=device,
-                        dtype=dtype,
-                    )
-                else:
-                    images = pl_module.sample(
-                        num_inference_steps=self.num_inference_steps,
-                        latents_shape=(b, c, self.num_frames, h, w) if self.num_frames > 1 else (b, c, h, w),
-                        encoder_hidden_states=encoder_hidden_states,
-                        device=device,
-                        dtype=dtype,
-                    )
+                # Ensure no autograd graph and minimal allocation
+                with torch.inference_mode():
+                    if encoder_inputs is not None:
+                        images = pl_module.sample(
+                            num_inference_steps=self.num_inference_steps,
+                            latents_shape=(b, c, self.num_frames, h, w) if self.num_frames > 1 else (b, c, h, w),
+                            encoder_inputs=encoder_inputs,  # type: ignore[arg-type]
+                            device=device,
+                            dtype=dtype,
+                        )
+                    else:
+                        images = pl_module.sample(
+                            num_inference_steps=self.num_inference_steps,
+                            latents_shape=(b, c, self.num_frames, h, w) if self.num_frames > 1 else (b, c, h, w),
+                            encoder_hidden_states=encoder_hidden_states,
+                            device=device,
+                            dtype=dtype,
+                        )
             finally:
                 if was_training:
                     pl_module.train()
@@ -195,6 +197,27 @@ class WandbVideoSamplingCallback(Callback):
             wandb.log(data, step=trainer.global_step)
         except Exception:
             pass
+        finally:
+            # Best-effort memory cleanup after sampling
+            try:
+                del images
+                del videos
+            except Exception:
+                pass
+            try:
+                import gc
+                gc.collect()
+            except Exception:
+                pass
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
 
     def on_train_batch_end(self, trainer: Trainer, pl_module: LightningModule, outputs, batch, batch_idx) -> None:  # type: ignore[override]
         self._maybe_sample_and_log(trainer, pl_module)
