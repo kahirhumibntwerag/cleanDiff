@@ -21,7 +21,7 @@ def create_diffusers_video_unet(
     cross_attention_dim: int | None = 768,
     attention_head_dim: int | None = None,
     layers_per_block: int = 2,
-    norm_num_groups: int | None = 32,
+    norm_num_groups: int | None = None,
     dtype: torch.dtype | None = None,
     optimizer_spec: OptimizerSpec | None = None,
 ) -> DiffusersVideoUNetBackbone:
@@ -44,8 +44,6 @@ def create_diffusers_video_unet(
         kwargs["cross_attention_dim"] = cross_attention_dim
     if attention_head_dim is not None:
         kwargs["attention_head_dim"] = attention_head_dim
-    if norm_num_groups is not None:
-        kwargs["norm_num_groups"] = norm_num_groups
 
     model = UNetSpatioTemporalConditionModel(**kwargs)
     if dtype is not None:

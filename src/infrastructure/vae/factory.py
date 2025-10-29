@@ -46,7 +46,7 @@ def create_diffusers_vae(
     layers_per_block: int = 2,
     sample_size: Optional[int] = None,
     scaling_factor: Optional[float] = 0.18215,
-    norm_num_groups: Optional[int] = 32,
+    norm_num_groups: Optional[int] = None,
     dtype: Optional[torch.dtype] = None,
     optimizer_spec: Optional[OptimizerSpec] = None,
 ) -> DiffusersVAEBackbone:
@@ -65,8 +65,6 @@ def create_diffusers_vae(
     }
     if sample_size is not None:
         kwargs["sample_size"] = sample_size
-    if norm_num_groups is not None:
-        kwargs["norm_num_groups"] = norm_num_groups
 
     model = AutoencoderKL(**kwargs)
     if scaling_factor is not None:
