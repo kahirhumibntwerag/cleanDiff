@@ -1,0 +1,7 @@
+lightning>=2.2.0,<3.0.0
+torch>=2.2.0
+pytest>=7.4
+diffusers>=0.30.0
+wandb>=0.17.0
+matplotlib>=3.7
+
