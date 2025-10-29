@@ -49,22 +49,25 @@ class DiffusersVideoUNetBackbone(nn.Module):
     ) -> torch.Tensor:
         squeezed = False
         permuted_for_model = False
-        # Heuristic: real diffusers models live under the 'diffusers.' module
+        # Heuristics to detect model kind
         model_module = getattr(self.model.__class__, "__module__", "")
+        class_name = getattr(self.model.__class__, "__name__", "")
         is_diffusers_model = isinstance(model_module, str) and model_module.startswith("diffusers.")
+        is_unet3d = is_diffusers_model and ("UNet3DConditionModel" in class_name or "unet_3d_condition" in model_module)
         if latents.ndim == 4:
             if is_diffusers_model:
-                # [B, C, H, W] -> [B, F=1, C, H, W] for diffusers
-                latents = latents.unsqueeze(1)
+                # For UNet3DConditionModel expect [B,C,1,H,W]; for older spatiotemporal expect [B,1,C,H,W]
+                latents = latents.unsqueeze(2) if is_unet3d else latents.unsqueeze(1)
             else:
                 # [B, C, H, W] -> [B, C, F=1, H, W] for generic/fake models
                 latents = latents.unsqueeze(2)
             squeezed = True
         elif latents.ndim == 5:
             if is_diffusers_model:
-                # Assume [B, C, F, H, W] and permute to [B, F, C, H, W] for diffusers 3D UNet
-                latents = latents.permute(0, 2, 1, 3, 4)
-                permuted_for_model = True
+                # UNet3DConditionModel expects [B,C,F,H,W]; SpatioTemporal expects [B,F,C,H,W]
+                if not is_unet3d:
+                    latents = latents.permute(0, 2, 1, 3, 4)
+                    permuted_for_model = True
             else:
                 # Keep as-is for generic/fake models expecting [B, C, F, H, W]
                 pass
@@ -109,8 +112,8 @@ class DiffusersVideoUNetBackbone(nn.Module):
             pred = pred.permute(0, 2, 1, 3, 4)
         if squeezed:
             if is_diffusers_model:
-                # [B, 1, C, H, W] -> [B, C, H, W]
-                pred = pred.squeeze(1)
+                # For UNet3DConditionModel squeezed at dim=2; for older spatiotemporal at dim=1
+                pred = pred.squeeze(2) if is_unet3d else pred.squeeze(1)
             else:
                 # [B, C, 1, H, W] -> [B, C, H, W]
                 pred = pred.squeeze(2)

@@ -4,7 +4,12 @@ from typing import Optional, Sequence, Union
 
 import torch
 
-from diffusers import UNetSpatioTemporalConditionModel
+try:
+    # Prefer the modern 3D conditional UNet
+    from diffusers import UNet3DConditionModel as _UNetPreferred
+except Exception:  # pragma: no cover - fallback if diffusers lacks 3D model
+    _UNetPreferred = None  # type: ignore[assignment]
+from diffusers import UNetSpatioTemporalConditionModel as _UNetFallback
 
 from .diffusers_video_unet import DiffusersVideoUNetBackbone
 from src.domain.interfaces.optim_spec import OptimizerSpec
@@ -73,8 +78,10 @@ def create_diffusers_video_unet(
     # Some diffusers versions require `norm_num_groups`; others reject it.
     # Some older versions also reject `attention_head_dim`.
     desired_norm = 32 if norm_num_groups is None else norm_num_groups
+    # Prefer UNet3DConditionModel when available; fallback to UNetSpatioTemporalConditionModel
+    UnetCls = _UNetPreferred or _UNetFallback
     try:
-        model = UNetSpatioTemporalConditionModel(**({**kwargs, "norm_num_groups": desired_norm}))
+        model = UnetCls(**({**kwargs, "norm_num_groups": desired_norm}))
     except TypeError as e:
         msg = str(e)
         if "attention_head_dim" in msg:
@@ -86,37 +93,35 @@ def create_diffusers_video_unet(
             new_blocks = []
             for out_ch, h in zip(block_out_channels, heads_list):
                 h_i = max(1, int(h))
-                # Ensure heads is a multiple of 4 so that (heads*88) is divisible by 32 for GroupNorm
                 if h_i % 4 != 0:
                     h_i = ((h_i // 4) + 1) * 4
                 new_blocks.append(h_i * 88)
             k2["block_out_channels"] = tuple(new_blocks)
             try:
-                model = UNetSpatioTemporalConditionModel(**({**k2, "norm_num_groups": desired_norm}))
+                model = UnetCls(**({**k2, "norm_num_groups": desired_norm}))
             except TypeError as e3:
                 if "norm_num_groups" in str(e3):
                     try:
-                        model = UNetSpatioTemporalConditionModel(**k2)
+                        model = UnetCls(**k2)
                     except TypeError as e4:
-                        if "num_groups" in str(e4) or "GroupNorm" in str(e4) or "%: 'int' and 'NoneType'" in str(e4):
+                        if UnetCls is _UNetFallback and ("num_groups" in str(e4) or "GroupNorm" in str(e4) or "%: 'int' and 'NoneType'" in str(e4)):
                             st_kwargs = dict(k2)
                             st_kwargs["down_block_types"] = ("DownBlockSpatioTemporal",) * len(tuple(down_block_types))
                             st_kwargs["up_block_types"] = ("UpBlockSpatioTemporal",) * len(tuple(up_block_types))
-                            model = UNetSpatioTemporalConditionModel(**st_kwargs)
+                            model = UnetCls(**st_kwargs)
                         else:
                             raise
                 else:
                     raise
         elif "norm_num_groups" in msg:
             try:
-                model = UNetSpatioTemporalConditionModel(**kwargs)
+                model = UnetCls(**kwargs)
             except TypeError as e2:
-                # Some older variants pass `resnet_groups=None` via get_down_block causing GroupNorm errors.
-                if "num_groups" in str(e2) or "GroupNorm" in str(e2) or "%: 'int' and 'NoneType'" in str(e2):
+                if UnetCls is _UNetFallback and ("num_groups" in str(e2) or "GroupNorm" in str(e2) or "%: 'int' and 'NoneType'" in str(e2)):
                     st_kwargs = dict(kwargs)
                     st_kwargs["down_block_types"] = ("DownBlockSpatioTemporal",) * len(tuple(down_block_types))
                     st_kwargs["up_block_types"] = ("UpBlockSpatioTemporal",) * len(tuple(up_block_types))
-                    model = UNetSpatioTemporalConditionModel(**st_kwargs)
+                    model = UnetCls(**st_kwargs)
                 else:
                     raise
         else:
@@ -141,7 +146,8 @@ def create_diffusers_video_unet_from_pretrained(
     """
     Load a UNetSpatioTemporalConditionModel from the Hugging Face Hub or local path and wrap it.
     """
-    model = UNetSpatioTemporalConditionModel.from_pretrained(
+    UnetCls = _UNetPreferred or _UNetFallback
+    model = UnetCls.from_pretrained(
         pretrained_model_name_or_path=model_name_or_path,
         subfolder=subfolder,
         revision=revision,
