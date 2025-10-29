@@ -19,6 +19,7 @@ from src.infrastructure.optimizers.torch_builder import TorchOptimizerBuilder
 from src.infrastructure.unet.factory import (
     create_diffusers_unet3d_condition,
     create_diffusers_unet3d_condition_from_pretrained,
+    create_diffusers_video_unet,
 )
 from src.infrastructure.vae.factory import (
     create_diffusers_vae,
@@ -75,7 +76,7 @@ class UNetConfig:
     torch_dtype: Optional[DTypeStr] = None
 
     # Build-time params (ignored if pretrained is provided)
-    sample_size: int = 32
+    sample_size: int = 256
     in_channels: int = 4
     out_channels: int = 4
     block_out_channels: Sequence[int] = (128, 256, 256)
@@ -231,7 +232,7 @@ def build_components(cfg: SystemConfig):
             down_types = cfg.unet.down_block_types
             up_types = cfg.unet.up_block_types
 
-        unet = create_diffusers_unet3d_condition(
+        unet = create_diffusers_video_unet(
             sample_size=cfg.unet.sample_size,
             in_channels=cfg.unet.in_channels,
             out_channels=cfg.unet.out_channels,
