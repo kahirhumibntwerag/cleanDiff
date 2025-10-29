@@ -160,3 +160,101 @@ def create_diffusers_video_unet_from_pretrained(
     return DiffusersVideoUNetBackbone(model=model, optimizer_spec=optimizer_spec)
 
 
+
+# ---- Explicit UNet3DConditionModel factories (strict conformance) ----
+def create_diffusers_unet3d_condition(
+    *,
+    sample_size: int | tuple[int, int] | None = None,
+    in_channels: int = 4,
+    out_channels: int = 4,
+    down_block_types: Sequence[str] = (
+        "CrossAttnDownBlock3D",
+        "CrossAttnDownBlock3D",
+        "CrossAttnDownBlock3D",
+        "DownBlock3D",
+    ),
+    up_block_types: Sequence[str] = (
+        "UpBlock3D",
+        "CrossAttnUpBlock3D",
+        "CrossAttnUpBlock3D",
+        "CrossAttnUpBlock3D",
+    ),
+    block_out_channels: Sequence[int] = (320, 640, 1280, 1280),
+    layers_per_block: int = 2,
+    downsample_padding: int = 1,
+    mid_block_scale_factor: float = 1.0,
+    act_fn: str = "silu",
+    norm_num_groups: int | None = 32,
+    norm_eps: float = 1e-5,
+    cross_attention_dim: int = 1024,
+    attention_head_dim: int | Sequence[int] = 64,
+    num_attention_heads: int | Sequence[int] | None = None,
+    time_cond_proj_dim: int | None = None,
+    dtype: torch.dtype | None = None,
+    optimizer_spec: OptimizerSpec | None = None,
+) -> DiffusersVideoUNetBackbone:
+    """
+    Build a UNet3DConditionModel with defaults matching the official implementation and wrap it.
+    """
+    if _UNetPreferred is None:
+        raise RuntimeError("UNet3DConditionModel is not available in the installed diffusers version.")
+
+    # Normalize tuple inputs
+    kwargs = {
+        "sample_size": sample_size,
+        "in_channels": in_channels,
+        "out_channels": out_channels,
+        "down_block_types": tuple(down_block_types),
+        "up_block_types": tuple(up_block_types),
+        "block_out_channels": tuple(block_out_channels),
+        "layers_per_block": int(layers_per_block),
+        "downsample_padding": int(downsample_padding),
+        "mid_block_scale_factor": float(mid_block_scale_factor),
+        "act_fn": act_fn,
+        "norm_num_groups": norm_num_groups,
+        "norm_eps": float(norm_eps),
+        "cross_attention_dim": int(cross_attention_dim),
+        "time_cond_proj_dim": time_cond_proj_dim,
+    }
+    # attention_head_dim can be int or per-block tuple
+    if isinstance(attention_head_dim, (list, tuple)):
+        kwargs["attention_head_dim"] = tuple(int(x) for x in attention_head_dim)
+    else:
+        kwargs["attention_head_dim"] = int(attention_head_dim)
+    if num_attention_heads is not None:
+        kwargs["num_attention_heads"] = (
+            tuple(int(x) for x in num_attention_heads) if isinstance(num_attention_heads, (list, tuple)) else int(num_attention_heads)
+        )
+
+    model = _UNetPreferred(**kwargs)
+    if dtype is not None:
+        model = model.to(dtype=dtype)
+    return DiffusersVideoUNetBackbone(model=model, optimizer_spec=optimizer_spec)
+
+
+def create_diffusers_unet3d_condition_from_pretrained(
+    model_name_or_path: str,
+    *,
+    subfolder: Optional[str] = None,
+    revision: Optional[str] = None,
+    torch_dtype: Optional[torch.dtype] = None,
+    variant: Optional[str] = None,
+    use_safetensors: bool = True,
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    optimizer_spec: OptimizerSpec | None = None,
+) -> DiffusersVideoUNetBackbone:
+    if _UNetPreferred is None:
+        raise RuntimeError("UNet3DConditionModel is not available in the installed diffusers version.")
+    model = _UNetPreferred.from_pretrained(
+        pretrained_model_name_or_path=model_name_or_path,
+        subfolder=subfolder,
+        revision=revision,
+        torch_dtype=torch_dtype,
+        variant=variant,
+        use_safetensors=use_safetensors,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
+    )
+    return DiffusersVideoUNetBackbone(model=model, optimizer_spec=optimizer_spec)
+
