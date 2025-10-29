@@ -5,7 +5,8 @@ from typing import List, Optional, Sequence
 import math
 import numpy as np
 import torch
-from pytorch_lightning import Callback, LightningModule, Trainer
+git from lightning.pytorch.callbacks import Callback
+from lightning.pytorch import LightningModule, Trainer
 
 try:
     import wandb  # type: ignore
