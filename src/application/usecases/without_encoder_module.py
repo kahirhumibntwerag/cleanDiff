@@ -35,7 +35,6 @@ class TrainWithoutEncoderDiffusionModule(LightningModule):
         self._set_requires_grad(self.vae, False)
         self.optimizer_builder = optimizer_builder
         self.sampler = sampler
-        self._train_sched_init = False
 
     @staticmethod
     def _set_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
@@ -66,12 +65,10 @@ class TrainWithoutEncoderDiffusionModule(LightningModule):
         return lat * self.vae.scaling_factor
 
     def _ensure_scheduler_training_timesteps(self, device: torch.device) -> None:
-        if not self._train_sched_init:
-            try:
-                _ = self.scheduler.set_timesteps(num_inference_steps=self.scheduler.num_train_timesteps, device=device)
-            except Exception:
-                pass
-            self._train_sched_init = True
+        try:
+            _ = self.scheduler.set_timesteps(num_inference_steps=self.scheduler.num_train_timesteps, device=device)
+        except Exception:
+            pass
 
     def training_step(self, batch: DiffusionBatch, batch_idx: int) -> torch.Tensor:
         images: torch.Tensor = batch["pixel_values"]

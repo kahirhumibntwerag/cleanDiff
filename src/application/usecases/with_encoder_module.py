@@ -36,7 +36,6 @@ class TrainEncoderDiffusionModule(LightningModule):
         self.sampler = sampler
         # Multiple optimizers -> use manual optimization per Lightning docs
         self.automatic_optimization = False
-        self._train_sched_init = False
 
     @staticmethod
     def _set_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
@@ -57,15 +56,12 @@ class TrainEncoderDiffusionModule(LightningModule):
         return out
 
     def _ensure_scheduler_training_timesteps(self, device: torch.device) -> None:
-        # Some schedulers (e.g., Euler*) require `set_timesteps` before calling add_noise.
-        # Initialize once with the training horizon to satisfy add_noise's internal mapping.
-        if not self._train_sched_init:
-            try:
-                _ = self.scheduler.set_timesteps(num_inference_steps=self.scheduler.num_train_timesteps, device=device)
-            except Exception:
-                # Best-effort: ignore if scheduler doesn't need initialization
-                pass
-            self._train_sched_init = True
+        # Always (re)initialize the scheduler training schedule, because sampling may change it
+        try:
+            _ = self.scheduler.set_timesteps(num_inference_steps=self.scheduler.num_train_timesteps, device=device)
+        except Exception:
+            # Best-effort: ignore if scheduler doesn't need initialization
+            pass
 
     def _compute_target(self, latents: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         pred_type = self.scheduler.prediction_type
