@@ -36,6 +36,7 @@ class TrainEncoderDiffusionModule(LightningModule):
         self.sampler = sampler
         # Multiple optimizers -> use manual optimization per Lightning docs
         self.automatic_optimization = False
+        self._train_sched_init = False
 
     @staticmethod
     def _set_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
@@ -54,6 +55,17 @@ class TrainEncoderDiffusionModule(LightningModule):
         if isinstance(out, dict):
             return out.get("encoder_hidden_states")
         return out
+
+    def _ensure_scheduler_training_timesteps(self, device: torch.device) -> None:
+        # Some schedulers (e.g., Euler*) require `set_timesteps` before calling add_noise.
+        # Initialize once with the training horizon to satisfy add_noise's internal mapping.
+        if not self._train_sched_init:
+            try:
+                _ = self.scheduler.set_timesteps(num_inference_steps=self.scheduler.num_train_timesteps, device=device)
+            except Exception:
+                # Best-effort: ignore if scheduler doesn't need initialization
+                pass
+            self._train_sched_init = True
 
     def _compute_target(self, latents: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         pred_type = self.scheduler.prediction_type
@@ -82,6 +94,7 @@ class TrainEncoderDiffusionModule(LightningModule):
         images: torch.Tensor = batch["pixel_values"]
         encoder_hidden_states = self._extract_encoder_hidden_states(batch)
         latents = self._prepare_latents(images, sample_from_posterior=True)
+        self._ensure_scheduler_training_timesteps(device=latents.device)
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
         timesteps = torch.randint(0, self.scheduler.num_train_timesteps, (bsz,), device=latents.device, dtype=torch.long)
@@ -108,6 +121,7 @@ class TrainEncoderDiffusionModule(LightningModule):
         images: torch.Tensor = batch["pixel_values"]
         encoder_hidden_states = self._extract_encoder_hidden_states(batch)
         latents = self._prepare_latents(images, sample_from_posterior=False)
+        self._ensure_scheduler_training_timesteps(device=latents.device)
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
         timesteps = torch.randint(0, self.scheduler.num_train_timesteps, (bsz,), device=latents.device, dtype=torch.long)

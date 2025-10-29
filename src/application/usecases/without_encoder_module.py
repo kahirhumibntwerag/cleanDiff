@@ -35,6 +35,7 @@ class TrainWithoutEncoderDiffusionModule(LightningModule):
         self._set_requires_grad(self.vae, False)
         self.optimizer_builder = optimizer_builder
         self.sampler = sampler
+        self._train_sched_init = False
 
     @staticmethod
     def _set_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
@@ -64,10 +65,19 @@ class TrainWithoutEncoderDiffusionModule(LightningModule):
                 lat = enc.latents
         return lat * self.vae.scaling_factor
 
+    def _ensure_scheduler_training_timesteps(self, device: torch.device) -> None:
+        if not self._train_sched_init:
+            try:
+                _ = self.scheduler.set_timesteps(num_inference_steps=self.scheduler.num_train_timesteps, device=device)
+            except Exception:
+                pass
+            self._train_sched_init = True
+
     def training_step(self, batch: DiffusionBatch, batch_idx: int) -> torch.Tensor:
         images: torch.Tensor = batch["pixel_values"]
         encoder_hidden_states = batch.get("encoder_hidden_states")  # type: ignore[assignment]
         latents = self._prepare_latents(images, sample_from_posterior=True)
+        self._ensure_scheduler_training_timesteps(device=latents.device)
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
         timesteps = torch.randint(0, self.scheduler.num_train_timesteps, (bsz,), device=latents.device, dtype=torch.long)
@@ -84,6 +94,7 @@ class TrainWithoutEncoderDiffusionModule(LightningModule):
         images: torch.Tensor = batch["pixel_values"]
         encoder_hidden_states = batch.get("encoder_hidden_states")  # type: ignore[assignment]
         latents = self._prepare_latents(images, sample_from_posterior=False)
+        self._ensure_scheduler_training_timesteps(device=latents.device)
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
         timesteps = torch.randint(0, self.scheduler.num_train_timesteps, (bsz,), device=latents.device, dtype=torch.long)
