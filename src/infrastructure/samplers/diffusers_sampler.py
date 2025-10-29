@@ -49,14 +49,19 @@ class DiffusersDenoiserSampler:
                 latents = step_out.prev_sample
 
         # Decode to images using VAE; its decode expects unscaled latents internally
+        # Ensure latents dtype matches VAE parameters to avoid dtype mismatch in layers/biases
+        try:
+            vae_param_dtype = next(vae.parameters()).dtype  # type: ignore[attr-defined]
+        except Exception:
+            vae_param_dtype = latents.dtype
         if latents.ndim == 4:
-            images = vae.decode(latents)
+            images = vae.decode(latents.to(dtype=vae_param_dtype))
             return images
         if latents.ndim == 5:
             # [B,C,F,H,W] -> [B*F,C,H,W] -> decode -> [B,F,3,H*8,W*8] -> [B,3,F,H*8,W*8]
             b, c, f, h, w = latents.shape
             latents_btchw = latents.permute(0, 2, 1, 3, 4).reshape(b * f, c, h, w)
-            imgs_btchw = vae.decode(latents_btchw)
+            imgs_btchw = vae.decode(latents_btchw.to(dtype=vae_param_dtype))
             imgs = imgs_btchw.reshape(b, f, imgs_btchw.shape[1], imgs_btchw.shape[2], imgs_btchw.shape[3]).permute(0, 2, 1, 3, 4)
             return imgs
         raise ValueError(f"Unsupported latents ndim: {latents.ndim}")
