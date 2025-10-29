@@ -5,7 +5,7 @@ from typing import List, Optional, Sequence
 import math
 import numpy as np
 import torch
-git from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.callbacks import Callback
 from lightning.pytorch import LightningModule, Trainer
 
 try:
