@@ -34,6 +34,8 @@ class TrainEncoderDiffusionModule(LightningModule):
         self._set_requires_grad(self.encoder, True)
         self.optimizer_builder = optimizer_builder
         self.sampler = sampler
+        # Multiple optimizers -> use manual optimization per Lightning docs
+        self.automatic_optimization = False
 
     @staticmethod
     def _set_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
@@ -82,6 +84,16 @@ class TrainEncoderDiffusionModule(LightningModule):
         target = self._compute_target(latents=latents, noise=noise, timesteps=timesteps)
         loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=bsz)
+
+        # Manual optimization over both optimizers (UNet + Encoder) when attached to a Trainer
+        if getattr(self, "_trainer", None) is not None:
+            opt_unet, opt_enc = self.optimizers()
+            opt_unet.zero_grad(set_to_none=True)
+            opt_enc.zero_grad(set_to_none=True)
+            self.manual_backward(loss)
+            opt_unet.step()
+            opt_enc.step()
+
         return loss
 
     def validation_step(self, batch: DiffusionBatch, batch_idx: int) -> torch.Tensor:
