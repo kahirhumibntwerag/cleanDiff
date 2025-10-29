@@ -38,11 +38,15 @@ class DiffusersDenoiserSampler:
         timesteps = scheduler.set_timesteps(num_inference_steps=num_inference_steps, device=device)
 
         # Denoising loop
-        for t in timesteps:
-            model_input = scheduler.scale_model_input(sample=latents, timestep=t)
-            model_output = unet(model_input, t, encoder_hidden_states=encoder_hidden_states)
-            step_out = scheduler.step(model_output=model_output, timestep=t, sample=latents, return_dict=True)
-            latents = step_out.prev_sample
+        use_amp = dtype in (torch.float16, torch.bfloat16)
+        device_type = device.type if hasattr(device, "type") else ("cuda" if torch.cuda.is_available() else "cpu")
+        amp_ctx = torch.autocast(device_type=device_type, dtype=dtype) if use_amp else _NullContext()
+        with amp_ctx:
+            for t in timesteps:
+                model_input = scheduler.scale_model_input(sample=latents, timestep=t)
+                model_output = unet(model_input, t, encoder_hidden_states=encoder_hidden_states)
+                step_out = scheduler.step(model_output=model_output, timestep=t, sample=latents, return_dict=True)
+                latents = step_out.prev_sample
 
         # Decode to images using VAE; its decode expects unscaled latents internally
         if latents.ndim == 4:
@@ -56,5 +60,13 @@ class DiffusersDenoiserSampler:
             imgs = imgs_btchw.reshape(b, f, imgs_btchw.shape[1], imgs_btchw.shape[2], imgs_btchw.shape[3]).permute(0, 2, 1, 3, 4)
             return imgs
         raise ValueError(f"Unsupported latents ndim: {latents.ndim}")
+
+
+class _NullContext:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
